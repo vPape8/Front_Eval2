@@ -66,7 +66,7 @@ jobs:
           echo "Imagen publicada: $IMAGE_URI"
 
   # ─────────────────────────────────────────
-  # JOB 2: Deploy en EC2 Frontend (pública)
+  # JOB 2: Deploy en EC2 Frontend
   # ─────────────────────────────────────────
   deploy:
     name: Deploy en EC2 Frontend

@@ -1,13 +1,13 @@
-name: CI/CD Backend - Build, Push & Deploy
- 
+name: CI/CD Frontend - Build, Push & Deploy
+
 on:
   push:
     branches:
       - deploy
- 
+
 env:
-  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/backend-eval2
- 
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/frontend-eval2
+
 jobs:
   # ─────────────────────────────────────────
   # JOB 1: Build y Push a Docker Hub
@@ -15,21 +15,21 @@ jobs:
   build-and-push:
     name: Build & Push Docker Image
     runs-on: ubuntu-latest
- 
+
     steps:
-      - name: 📥 Checkout del repositorio
+      - name: Checkout del repositorio
         uses: actions/checkout@v4
- 
-      - name: 🔧 Configurar Docker Buildx
+
+      - name: Configurar Docker Buildx
         uses: docker/setup-buildx-action@v3
- 
-      - name: 🔐 Login a Docker Hub
+
+      - name: Login a Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
- 
-      - name: 🏷️ Extraer metadata
+
+      - name: Extraer metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -37,31 +37,26 @@ jobs:
           tags: |
             type=raw,value=latest
             type=sha,prefix=sha-,format=short
- 
-      - name: 🐳 Build & Push imagen multi-stage
+
+      - name: Build & Push imagen multi-stage
         uses: docker/build-push-action@v5
         with:
           context: .
-          dockerfile: Dockerfile
           target: production
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
- 
+
   # ─────────────────────────────────────────
-  # JOB 2: Deploy via Bastion (Frontend → Backend)
-  # Los ${{ secrets.X }} se expanden ANTES de llegar
-  # al SSH, por eso funcionan correctamente aquí.
+  # JOB 2: Deploy en EC2 Frontend (pública)
   # ─────────────────────────────────────────
   deploy:
-    name: Deploy en EC2 Backend (via Bastion)
+    name: Deploy en EC2 Frontend
     runs-on: ubuntu-latest
     needs: build-and-push
- 
+
     steps:
-      - name: 🚀 Deploy via Bastion SSH
+      - name: Deploy vía SSH a EC2 Frontend
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.EC2_FRONTEND_HOST }}
@@ -69,54 +64,27 @@ jobs:
           key: ${{ secrets.EC2_FRONTEND_KEY }}
           port: 22
           script: |
-            # Escribir key del backend en el Bastion
-            echo "${{ secrets.EC2_BACKEND_KEY }}" > /tmp/bkey.pem
-            chmod 600 /tmp/bkey.pem
- 
-            # Ejecutar comandos en el Backend via SSH
-            # Los ${{ secrets }} ya están expandidos por GitHub Actions antes de llegar aquí
-            ssh -i /tmp/bkey.pem \
-              -o StrictHostKeyChecking=no \
-              ${{ secrets.EC2_BACKEND_USER }}@${{ secrets.EC2_BACKEND_PRIVATE_IP }} \
-              "
-              set -e
- 
-              # Login Docker Hub
-              echo '${{ secrets.DOCKERHUB_TOKEN }}' | \
-                docker login -u '${{ secrets.DOCKERHUB_USERNAME }}' --password-stdin
- 
-              # Directorio de trabajo
-              mkdir -p ~/app && cd ~/app
- 
-              # Archivo .env de producción
-              printf 'NODE_ENV=production\nPORT=3000\nDB_HOST=db\nDB_PORT=3306\nDB_USER=${{ secrets.DB_USER }}\nDB_PASSWORD=${{ secrets.DB_PASSWORD }}\nDB_NAME=${{ secrets.DB_NAME }}\nMYSQL_ROOT_PASSWORD=${{ secrets.MYSQL_ROOT_PASSWORD }}\n' > .env
- 
-              # Descargar imagen actualizada
-              docker pull ${{ secrets.DOCKERHUB_USERNAME }}/backend-eval2:latest
- 
-              # Bajar stack anterior sin borrar volúmenes
-              docker compose down 2>/dev/null || true
- 
-              # Descargar docker-compose.yml desde el repo
-              curl -fsSL \
-                'https://raw.githubusercontent.com/${{ github.repository }}/deploy/docker-compose.yml' \
-                -o docker-compose.yml
- 
-              # Descargar SQL solo la primera vez
-              if [ ! -f init.sql ]; then
-                curl -fsSL \
-                  'https://raw.githubusercontent.com/JavPenaR/Data_Eval2/main/01_creacion_base_datos.sql' \
-                  -o init.sql
-              fi
- 
-              # Levantar stack: Backend + MySQL
-              export IMAGE_NAME='${{ secrets.DOCKERHUB_USERNAME }}/backend-eval2:latest'
-              docker compose up -d
- 
-              docker image prune -f
-              docker compose ps
-              "
- 
-            # Limpiar key temporal
-            rm -f /tmp/bkey.pem
-            echo "Deploy completado"
+            echo "=== Iniciando deploy del Frontend ==="
+
+            echo "${{ secrets.DOCKERHUB_TOKEN }}" | \
+              docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+            docker stop frontend_app 2>/dev/null || true
+            docker rm frontend_app 2>/dev/null || true
+
+            docker pull ${{ secrets.DOCKERHUB_USERNAME }}/frontend-eval2:latest
+
+            docker run -d \
+              --name frontend_app \
+              --restart unless-stopped \
+              -p 5000:5000 \
+              -e PORT=5000 \
+              -e DEBUG=False \
+              -e BACKEND_URL=${{ secrets.BACKEND_INTERNAL_URL }} \
+              -e SECRET_KEY=${{ secrets.FRONTEND_SECRET_KEY }} \
+              ${{ secrets.DOCKERHUB_USERNAME }}/frontend-eval2:latest
+
+            docker image prune -f
+
+            echo "=== Deploy completado ==="
+            docker ps | grep frontend_app
